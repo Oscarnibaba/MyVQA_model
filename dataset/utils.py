@@ -9,7 +9,6 @@ def pre_question(question, max_ques_words):
         question.lower(),
     ).replace(' \t', ' ').replace('is/are', 'is').replace('near/in', 'in')
     question = question.replace('>', 'more than ').replace('-yes/no', '')
-    question = question.replace('x ray', 'xray').replace('x-ray', 'xray')
     question = question.rstrip(' ')
 
     # truncate question
@@ -27,7 +26,6 @@ def pre_answer(answer):
         '',
         answer.lower(),
     ).replace(' \t', ' ')
-    answer = answer.replace('x ray', 'xray').replace('x-ray', 'xray')
     answer = answer.replace(' - ', '-')
     return answer
 
@@ -55,7 +53,6 @@ def pre_caption(caption, max_words):
     return caption
 
 
-from vqaTools.vqaEval import VQAEval
 
 import json
 import os

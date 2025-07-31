@@ -1,7 +1,7 @@
 import argparse
 import os
 import sys
-import ruamel_yaml as yaml
+import ruamel.yaml as yaml
 import time
 import datetime
 import json
@@ -13,7 +13,6 @@ from models.Mymodel_vqa import VQA_Classifier
 from models.vision.vit import interpolate_pos_embed
 from models.tokenization_bert import BertTokenizer
 import utils
-from dataset.utils import save_result
 from dataset import create_dataset, create_sampler, create_loader, vqa_collate_fn
 from utils import cosine_lr_schedule
 from EvalAcc_vqa import evaluate_vqa_accuracy, gather_evaluation_results
@@ -98,6 +97,29 @@ def main(args, config):
         if 'visual_encoder.pos_embed' in state_dict:
             pos_embed_reshaped = interpolate_pos_embed(state_dict['visual_encoder.pos_embed'], model.visual_encoder)
             state_dict['visual_encoder.pos_embed'] = pos_embed_reshaped
+
+        for key in list(state_dict.keys()):
+            if 'bert' in key:
+                encoder_key = key.replace('bert.', '')
+                state_dict[encoder_key] = state_dict[key]
+                # intialize text decoder as multimodal encoder (last 6 layers of model.text_encoder)
+            if 'text_encoder' in key:
+                if 'layer' in key:
+                    encoder_keys = key.split('.')
+                    layer_num = int(encoder_keys[4])
+                    if layer_num < 6:
+                        del state_dict[key]
+                        continue
+                    else:
+                        decoder_layer_num = (layer_num - 6)
+                        encoder_keys[4] = str(decoder_layer_num)
+                        encoder_key = '.'.join(encoder_keys)
+                else:
+                    encoder_key = key
+                decoder_key = encoder_key.replace('text_encoder', 'text_decoder')
+                state_dict[decoder_key] = state_dict[key]
+
+                del state_dict[key]
         msg = model.load_state_dict(state_dict, strict=False)
         print('Loaded checkpoint from', args.checkpoint)
         print("Missing keys:", msg.missing_keys)
@@ -148,8 +170,8 @@ if __name__ == '__main__':
     parser.add_argument('--is_save_path', default=False)
     parser.add_argument('--checkpoint', default='')
     parser.add_argument('--output_suffix', default='')
-    parser.add_argument('--output_dir', default='')
-    parser.add_argument('--text_encoder', default='bert-base-uncased')
+    parser.add_argument('--output_dir', default='/data/nfs/qiuchen/hyf/code/MyVQA_model-main/output')
+    parser.add_argument('--text_encoder', default='/data/nfs/qiuchen/hyf/pretrained_ckp/bert-base-uncased')
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--world_size', default=1, type=int)

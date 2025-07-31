@@ -3,11 +3,11 @@ import json
 from PIL import Image
 from torch.utils.data import Dataset
 from .utils import pre_question, pre_answer
-
+import random
 
 class vqa_dataset(Dataset):
     def __init__(self, ann_file, transform, vqa_root, eos='[SEP]', split="train", max_ques_words=30,
-                 answer_list=''):
+                 answer_list='', sample_fraction=1.0):
         self.split = split
         self.ann = []
         for f in ann_file:
@@ -17,6 +17,10 @@ class vqa_dataset(Dataset):
         self.vqa_root = vqa_root
         self.max_ques_words = max_ques_words
         self.eos = eos
+
+        if 0 < sample_fraction < 1.0:  # 如果 sample_fraction 是 1.0，则使用完整数据
+            subset_size = int(len(self.ann) * sample_fraction)
+            self.ann = random.sample(self.ann, subset_size)
 
         if split == 'test':
             self.max_ques_words = 50  # do not limit question length during test
@@ -49,6 +53,5 @@ class vqa_dataset(Dataset):
 
             answers = ann['answer']
             answers = [pre_answer(answers)]
-            answers = [answer + self.eos for answer in answers]
 
             return image, question, answers
