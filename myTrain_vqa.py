@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 import logging
-from models.Mymodel_vqa import VQA_Classifier  # 替换为分类器模型
+from models.Mymodel_vqa import VQA_Classifier
 from models.vision.vit import interpolate_pos_embed
 from models.tokenization_bert import BertTokenizer
 import utils
@@ -62,7 +62,7 @@ def evaluation(model, data_loader, device, config, id2label):
             result.append({"qid": ques_id, "answer": pred_answer})
     return result
 
-def main(args, config):
+def main(args, config, acc_output_file):
     if args.distributed:
         utils.init_distributed_mode(args)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -87,8 +87,7 @@ def main(args, config):
 
     tokenizer = BertTokenizer.from_pretrained(args.text_encoder)
 
-    # ===== 构建答案类别映射表 ===== #
-    answer_list = datasets[0].answer_list
+    answer_list = datasets[1].answer_list  # 更保险地使用测试集的 answer list
     label2id = {a: i for i, a in enumerate(answer_list)}
     id2label = {i: a for a, i in label2id.items()}
 
@@ -102,49 +101,45 @@ def main(args, config):
         checkpoint = torch.load(args.checkpoint, map_location='cpu')
         state_dict = checkpoint['model']
 
-        # # 仅加载视觉编码器的 pos_embed（支持插值）
-        # if 'visual_encoder.pos_embed' in state_dict:
-        pos_embed_reshaped = interpolate_pos_embed(state_dict['visual_encoder.pos_embed'], model.visual_encoder)
-        state_dict['visual_encoder.pos_embed'] = pos_embed_reshaped
+        if 'visual_encoder.pos_embed' in state_dict:
+            pos_embed_reshaped = interpolate_pos_embed(state_dict['visual_encoder.pos_embed'], model.visual_encoder)
+            state_dict['visual_encoder.pos_embed'] = pos_embed_reshaped
 
-        # 加载模型参数（非严格匹配即可）
         msg = model.load_state_dict(state_dict, strict=False)
         print('Loaded checkpoint from %s' % args.checkpoint)
-        print(msg)
+        print("Missing keys:", msg.missing_keys)
+        print("Unexpected keys:", msg.unexpected_keys)
 
-    model_without_ddp = model
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        model_without_ddp = model.module
+    model_without_ddp = model.module if hasattr(model, 'module') else model
 
     start_epoch = 0
     print("\nStart training\n")
     start_time = time.time()
 
     for epoch in range(start_epoch, config['max_epoch']):
-        if not args.evaluate:
-            if args.distributed:
-                train_loader.sampler.set_epoch(epoch)
-            cosine_lr_schedule(optimizer, epoch, config['max_epoch'], config['init_lr'], config['min_lr'])
-            train(model, train_loader, optimizer, epoch, device, config, label2id)
+        if args.distributed:
+            train_loader.sampler.set_epoch(epoch)
+        cosine_lr_schedule(optimizer, epoch, config['max_epoch'], config['init_lr'], config['min_lr'])
+        train(model, train_loader, optimizer, epoch, device, config, label2id)
 
-            prefix = args.checkpoint.split('/')[-1].split('.')[0]
+        prefix = Path(args.checkpoint).stem if args.checkpoint else 'no_ckpt'
 
-            # 获取评估结果并在主进程汇总
-            if epoch > 9:
-                vqa_result = evaluation(model, test_loader, device, config)
-                all_results = gather_evaluation_results(vqa_result)
+        if epoch > 9:
+            vqa_result = evaluation(model, test_loader, device, config, id2label)
+            all_results = gather_evaluation_results(vqa_result)
 
-            # 将结果保存为 JSON 文件
-            if utils.is_main_process() and epoch > 9:
-                json_file_path = os.path.join(args.result_dir, f'{prefix}_vqa_result_{epoch}.json')
-                with open(json_file_path, 'w') as f:
-                    json.dump(all_results, f)
-                res_file_path = '%s/result/%s_vqa_result_%d.json' % (args.output_dir, prefix, epoch)
-                evaluate_vqa_accuracy(res_file_path, config[args.dataset_use]['test_file'][0], acc_output_file, epoch)
+        if utils.is_main_process() and epoch > 9:
+            json_file_path = os.path.join(args.result_dir, f'{prefix}_vqa_result_{epoch}.json')
+            with open(json_file_path, 'w') as f:
+                json.dump(all_results, f)
+            res_file_path = '%s/result/%s_vqa_result_%d.json' % (args.output_dir, prefix, epoch)
+            evaluate_vqa_accuracy(res_file_path, config[args.dataset_use]['test_file'][0], args.acc_output_file, epoch)
 
-        if args.evaluate:
-            break
+            # 保存模型
+            save_obj = {'model': model_without_ddp.state_dict()}
+            torch.save(save_obj, os.path.join(args.output_dir, f'{prefix}_epoch_{epoch}.pth'))
 
         if args.distributed:
             dist.barrier()
@@ -153,9 +148,6 @@ def main(args, config):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
-    # res_file_path = '%s/result/%s_vqa_result_<epoch>.json' % (args.output_dir, prefix)
-    # compute_vqa_acc(answer_list_path=config[args.dataset_use]['test_file'][0], epoch=config['max_epoch'], res_file_path=res_file_path)
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset_use', default='rad')
@@ -163,7 +155,6 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', default='')
     parser.add_argument('--output_suffix', default='')
     parser.add_argument('--output_dir', default='')
-    parser.add_argument('--evaluate', action='store_true')
     parser.add_argument('--text_encoder', default='bert-base-uncased')
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--seed', default=42, type=int)
@@ -172,7 +163,6 @@ if __name__ == '__main__':
     parser.add_argument('--distributed', default=False, type=bool)
 
     args = parser.parse_args()
-    # args.output_dir = '/mnt/sda/lpf/weights/output/V2/vqa/' + args.dataset_use + args.output_suffix
     args.output_dir = os.path.join(args.output_dir, args.dataset_use, args.output_suffix)
     config = yaml.load(open('./configs/VQA.yaml', 'r'), Loader=yaml.Loader)
 
@@ -181,7 +171,7 @@ if __name__ == '__main__':
     Path(args.result_dir).mkdir(parents=True, exist_ok=True)
 
     sys.stdout = utils.Logger(filename=os.path.join(args.output_dir, "log.txt"), stream=sys.stdout)
-    acc_output_file = os.path.join(args.result_dir, 'accuracy_log.json')
+    args.acc_output_file = os.path.join(args.result_dir, 'accuracy_log.json')
 
     print("config: ", config)
     print("args: ", args)
