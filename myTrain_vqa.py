@@ -43,12 +43,11 @@ def train(model, data_loader, optimizer, epoch, device, config, label2id):
     print("Averaged stats:", metric_logger.global_avg())
     return {k: "{:.6f}".format(meter.global_avg) for k, meter in metric_logger.meters.items()}
 
-
 @torch.no_grad()
 def evaluation(model, data_loader, device, config, id2label):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
-    header = 'Generate VQA test result:'
+    header = 'Generate VQA result:'
     print_freq = 50
     result = []
 
@@ -62,7 +61,7 @@ def evaluation(model, data_loader, device, config, id2label):
             result.append({"qid": ques_id, "answer": pred_answer})
     return result
 
-def main(args, config, acc_output_file):
+def main(args, config):
     if args.distributed:
         utils.init_distributed_mode(args)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -70,43 +69,37 @@ def main(args, config, acc_output_file):
 
     print('Creating vqa {} datasets'.format(args.dataset_use))
     datasets = create_dataset(args.dataset_use, config)
-    print('train dataset size: ', len(datasets[0]))
-    print('test dataset size: ', len(datasets[1]))
+    has_val = 'val_file' in config[args.dataset_use] and len(config[args.dataset_use]['val_file']) > 0
 
-    if args.distributed:
-        num_tasks = utils.get_world_size()
-        global_rank = utils.get_rank()
-        samplers = create_sampler(datasets, [True, False], num_tasks, global_rank)
+    if has_val:
+        print('train:', len(datasets[0]), 'val:', len(datasets[1]), 'test:', len(datasets[2]))
+        samplers = create_sampler(datasets, [True, False, False], utils.get_world_size(), utils.get_rank()) if args.distributed else [None, None, None]
+        loaders = create_loader(datasets, samplers, batch_size=[config['batch_size_train'], config['batch_size_test'], config['batch_size_test']], num_workers=[4, 4, 4], is_trains=[True, False, False], collate_fns=[vqa_collate_fn, None, None])
+        train_loader, val_loader, test_loader = loaders
     else:
-        samplers = [None, None]
-
-    train_loader, test_loader = create_loader(datasets, samplers,
-                                              batch_size=[config['batch_size_train'], config['batch_size_test']],
-                                              num_workers=[4, 4], is_trains=[True, False],
-                                              collate_fns=[vqa_collate_fn, None])
+        print('train:', len(datasets[0]), 'test:', len(datasets[1]))
+        samplers = create_sampler(datasets, [True, False], utils.get_world_size(), utils.get_rank()) if args.distributed else [None, None]
+        loaders = create_loader(datasets, samplers, batch_size=[config['batch_size_train'], config['batch_size_test']], num_workers=[4, 4], is_trains=[True, False], collate_fns=[vqa_collate_fn, None])
+        train_loader, test_loader = loaders
+        val_loader = None
 
     tokenizer = BertTokenizer.from_pretrained(args.text_encoder)
-
-    answer_list = datasets[1].answer_list  # 更保险地使用测试集的 answer list
+    answer_list = test_loader.dataset.answer_list
     label2id = {a: i for i, a in enumerate(answer_list)}
     id2label = {i: a for a, i in label2id.items()}
 
     print("Creating classifier model")
-    model = VQA_Classifier(config=config, tokenizer=tokenizer, text_encoder=args.text_encoder, num_answer_classes=len(answer_list))
-    model = model.to(device)
-
+    model = VQA_Classifier(config=config, tokenizer=tokenizer, text_encoder=args.text_encoder, num_answer_classes=len(answer_list)).to(device)
     optimizer = torch.optim.AdamW(params=model.parameters(), lr=config['init_lr'], weight_decay=config['weight_decay'])
 
     if args.checkpoint:
         checkpoint = torch.load(args.checkpoint, map_location='cpu')
         state_dict = checkpoint['model']
-
         if 'visual_encoder.pos_embed' in state_dict:
             pos_embed_reshaped = interpolate_pos_embed(state_dict['visual_encoder.pos_embed'], model.visual_encoder)
             state_dict['visual_encoder.pos_embed'] = pos_embed_reshaped
-
         msg = model.load_state_dict(state_dict, strict=False)
-        print('Loaded checkpoint from %s' % args.checkpoint)
+        print('Loaded checkpoint from', args.checkpoint)
         print("Missing keys:", msg.missing_keys)
         print("Unexpected keys:", msg.unexpected_keys)
 
@@ -114,9 +107,10 @@ def main(args, config, acc_output_file):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
     model_without_ddp = model.module if hasattr(model, 'module') else model
 
-    start_epoch = 0
     print("\nStart training\n")
+    start_epoch = 0
     start_time = time.time()
+    prefix = Path(args.checkpoint).stem if args.checkpoint else 'no_ckpt'
 
     for epoch in range(start_epoch, config['max_epoch']):
         if args.distributed:
@@ -124,29 +118,29 @@ def main(args, config, acc_output_file):
         cosine_lr_schedule(optimizer, epoch, config['max_epoch'], config['init_lr'], config['min_lr'])
         train(model, train_loader, optimizer, epoch, device, config, label2id)
 
-        prefix = Path(args.checkpoint).stem if args.checkpoint else 'no_ckpt'
+        if epoch > 0:
+            if val_loader is not None:
+                val_result = evaluation(model, val_loader, device, config, id2label)
+                all_val = gather_evaluation_results(val_result)
+                if utils.is_main_process():
+                    val_json = os.path.join(args.result_dir, f'{prefix}_val_result_{epoch}.json')
+                    with open(val_json, 'w') as f:
+                        json.dump(all_val, f)
+                    evaluate_vqa_accuracy(val_json, config[args.dataset_use]['val_file'][0], args.acc_output_file, epoch)
 
-        if epoch > 9:
-            vqa_result = evaluation(model, test_loader, device, config, id2label)
-            all_results = gather_evaluation_results(vqa_result)
-
-        if utils.is_main_process() and epoch > 9:
-            json_file_path = os.path.join(args.result_dir, f'{prefix}_vqa_result_{epoch}.json')
-            with open(json_file_path, 'w') as f:
-                json.dump(all_results, f)
-            res_file_path = '%s/result/%s_vqa_result_%d.json' % (args.output_dir, prefix, epoch)
-            evaluate_vqa_accuracy(res_file_path, config[args.dataset_use]['test_file'][0], args.acc_output_file, epoch)
-
-            # 保存模型
-            save_obj = {'model': model_without_ddp.state_dict()}
-            torch.save(save_obj, os.path.join(args.output_dir, f'{prefix}_epoch_{epoch}.pth'))
+            test_result = evaluation(model, test_loader, device, config, id2label)
+            all_test = gather_evaluation_results(test_result)
+            if utils.is_main_process():
+                test_json = os.path.join(args.result_dir, f'{prefix}_test_result_{epoch}.json')
+                with open(test_json, 'w') as f:
+                    json.dump(all_test, f)
+                evaluate_vqa_accuracy(test_json, config[args.dataset_use]['test_file'][0], args.acc_output_file, epoch)
+                torch.save({'model': model_without_ddp.state_dict()}, os.path.join(args.output_dir, f'{prefix}_epoch_{epoch}.pth'))
 
         if args.distributed:
             dist.barrier()
 
-    total_time = time.time() - start_time
-    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print('Training time {}'.format(total_time_str))
+    print('Training time', str(datetime.timedelta(seconds=int(time.time() - start_time))))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -161,18 +155,16 @@ if __name__ == '__main__':
     parser.add_argument('--world_size', default=1, type=int)
     parser.add_argument('--dist_url', default='env://')
     parser.add_argument('--distributed', default=False, type=bool)
-
     args = parser.parse_args()
+
     args.output_dir = os.path.join(args.output_dir, args.dataset_use, args.output_suffix)
     config = yaml.load(open('./configs/VQA.yaml', 'r'), Loader=yaml.Loader)
-
     args.result_dir = os.path.join(args.output_dir, 'result')
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     Path(args.result_dir).mkdir(parents=True, exist_ok=True)
-
     sys.stdout = utils.Logger(filename=os.path.join(args.output_dir, "log.txt"), stream=sys.stdout)
     args.acc_output_file = os.path.join(args.result_dir, 'accuracy_log.json')
 
-    print("config: ", config)
-    print("args: ", args)
+    print("config:", config)
+    print("args:", args)
     main(args, config)

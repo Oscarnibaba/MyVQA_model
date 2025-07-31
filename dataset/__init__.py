@@ -9,46 +9,84 @@ from .randaugment import RandomAugment
 
 
 def create_dataset(dataset, config):
-    normalize = transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711))
-
-    train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(config['image_res'], scale=(0.5, 1.0), interpolation=Image.BICUBIC),
-        transforms.RandomHorizontalFlip(),
-        RandomAugment(2, 7, isPIL=True, augs=['Identity', 'AutoContrast', 'Equalize', 'Brightness', 'Sharpness',
-                                              'ShearX', 'ShearY', 'TranslateX', 'TranslateY', 'Rotate']),
-        transforms.ToTensor(),
-        normalize,
-    ])
-    test_transform = transforms.Compose([
-        transforms.Resize((config['image_res'], config['image_res']), interpolation=Image.BICUBIC),
-        transforms.ToTensor(),
-        normalize,
-    ])
-
-
-    # vqa_rad
-    if dataset == 'rad':
-        train_dataset = vqa_dataset(config['rad']['train_file'], train_transform, config['rad']['vqa_root'], split='train')
-        test_dataset = vqa_dataset(config['rad']['test_file'], test_transform, config['rad']['vqa_root'], split='test',
-                                   answer_list=config['rad']['answer_list'])
+    if dataset == 'VRS':
+        normalize = transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711))
+        train_transform = transforms.Compose([
+            transforms.RandomResizedCrop(config['image_res'], scale=(0.9, 1.0), interpolation=Image.BICUBIC),
+            # transforms.RandomHorizontalFlip(),
+            RandomAugment(2, 7, isPIL=True, augs=['Identity','AutoContrast', 'Equalize', 'Brightness', 'Sharpness', 'Color','TranslateX','TranslateY']),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        test_transform = transforms.Compose([
+            transforms.Resize((config['image_res'], config['image_res']), interpolation=Image.BICUBIC),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        train_dataset = vqa_dataset(config['VRS']['train_file'], train_transform, config['VRS']['vqa_root'], split='train', sample_fraction=0.1)
+        test_dataset = vqa_dataset(config['VRS']['test_file'], test_transform, config['VRS']['vqa_root'], split='test',
+                                   answer_list=config['VRS']['answer_list'])
         return train_dataset, test_dataset
 
-    # pathvqa
-    elif dataset == 'pathvqa':
-        train_dataset = vqa_dataset(config['pathvqa']['train_file'], train_transform, config['pathvqa']['vqa_root'], split='train')
-        test_dataset = vqa_dataset(config['pathvqa']['test_file'], test_transform, config['pathvqa']['vqa_root'], split='test',
-                                   answer_list=config['pathvqa']['answer_list'])
-        return train_dataset, test_dataset
-    # slake
-    elif dataset == 'slake':
-        train_dataset = vqa_dataset(config['slake']['train_file'], train_transform, config['slake']['vqa_root'], split='train')
-        test_dataset = vqa_dataset(config['slake']['test_file'], test_transform, config['slake']['vqa_root'], split='test',
-                                   answer_list=config['slake']['answer_list'])
-        return train_dataset, test_dataset
-    elif dataset == 'med2019':
-        train_dataset = vqa_dataset(config['med2019']['train_file'], train_transform, config['med2019']['vqa_root'], split='train')
-        test_dataset = vqa_dataset(config['med2019']['test_file'], test_transform, config['med2019']['vqa_root'], split='test',
-                                   answer_list=config['med2019']['answer_list'])
+    elif dataset == 'LR':
+        normalize = transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711))
+        train_transform = transforms.Compose([
+            transforms.RandomResizedCrop(config['image_res'], scale=(0.8, 1.0), interpolation=Image.BICUBIC),
+            transforms.RandomHorizontalFlip(),
+            RandomAugment(2, 7, isPIL=True, augs=['Identity', 'AutoContrast', 'Equalize', 'Brightness', 'Sharpness','Rotate']),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        test_transform = transforms.Compose([
+            transforms.Resize((config['image_res'], config['image_res']), interpolation=Image.BICUBIC),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        train_dataset = vqa_dataset(config['LR']['train_file'], train_transform, config['LR']['vqa_root'], split='train', sample_fraction=1.0)
+        test_dataset = vqa_dataset(config['LR']['test_file'], test_transform, config['LR']['vqa_root'], split='test',
+                                   answer_list=config['LR']['answer_list_test'])
+        val_dataset = vqa_dataset(config['LR']['val_file'], test_transform, config['LR']['vqa_root'], split='test',
+                                   answer_list=config['LR']['answer_list_val'])
+        return train_dataset, test_dataset, val_dataset
+
+    elif dataset == 'HR':
+        normalize = transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711))
+        train_transform = transforms.Compose([
+            transforms.RandomResizedCrop(config['image_res'], scale=(0.8, 1.0), interpolation=Image.BICUBIC),
+            transforms.RandomHorizontalFlip(),
+            RandomAugment(2, 7, isPIL=True, augs=['Identity', 'AutoContrast', 'Equalize', 'Brightness', 'Sharpness','Rotate']),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        test_transform = transforms.Compose([
+            transforms.Resize((config['image_res'], config['image_res']), interpolation=Image.BICUBIC),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        train_dataset = vqa_dataset(config['HR']['train_file'], train_transform, config['HR']['vqa_root'], split='train', sample_fraction=1.0)
+        test1_dataset = vqa_dataset(config['HR']['test1_file'], test_transform, config['HR']['vqa_root'], split='test',
+                                   answer_list=config['HR']['answer_list1'])
+        test2_dataset = vqa_dataset(config['HR']['test2_file'], test_transform, config['HR']['vqa_root'], split='test',
+                                   answer_list=config['HR']['answer_list2'])
+        return train_dataset, test1_dataset, test2_dataset
+
+    elif dataset == 'HRVQA':
+        normalize = transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711))
+        train_transform = transforms.Compose([
+            transforms.RandomResizedCrop(config['image_res'], scale=(0.9, 1.0), interpolation=Image.BICUBIC),
+            # transforms.RandomHorizontalFlip(),
+            RandomAugment(2, 7, isPIL=True, augs=['Identity','AutoContrast', 'Equalize', 'Brightness', 'Sharpness', 'Color','TranslateX','TranslateY']),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        test_transform = transforms.Compose([
+            transforms.Resize((config['image_res'], config['image_res']), interpolation=Image.BICUBIC),
+            transforms.ToTensor(),
+            normalize,
+        ])
+        train_dataset = vqa_dataset(config['HRVQA']['train_file'], train_transform, config['HRVQA']['vqa_root'], split='train', sample_fraction=1.0)
+        test_dataset = vqa_dataset(config['HRVQA']['test_file'], test_transform, config['HRVQA']['vqa_root'], split='test',
+                                   answer_list=config['HRVQA']['answer_list'])
         return train_dataset, test_dataset
 
 
