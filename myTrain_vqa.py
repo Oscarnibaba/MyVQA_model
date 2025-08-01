@@ -71,10 +71,10 @@ def main(args, config):
     has_val = 'val_file' in config[args.dataset_use] and len(config[args.dataset_use]['val_file']) > 0
 
     if has_val:
-        print('train:', len(datasets[0]), 'val:', len(datasets[1]), 'test:', len(datasets[2]))
+        print('train:', len(datasets[0]), 'test:', len(datasets[1]), 'val:', len(datasets[2]))
         samplers = create_sampler(datasets, [True, False, False], utils.get_world_size(), utils.get_rank()) if args.distributed else [None, None, None]
         loaders = create_loader(datasets, samplers, batch_size=[config['batch_size_train'], config['batch_size_test'], config['batch_size_test']], num_workers=[4, 4, 4], is_trains=[True, False, False], collate_fns=[vqa_collate_fn, None, None])
-        train_loader, val_loader, test_loader = loaders
+        train_loader, test_loader, val_loader  = loaders
     else:
         print('train:', len(datasets[0]), 'test:', len(datasets[1]))
         samplers = create_sampler(datasets, [True, False], utils.get_world_size(), utils.get_rank()) if args.distributed else [None, None]
